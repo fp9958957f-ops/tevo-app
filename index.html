@@ -160,6 +160,10 @@
   .poster-card { flex-shrink: 0; width: 108px; height: 156px; border-radius: 12px; position: relative; overflow: hidden; box-shadow: 0 4px 12px rgba(40,30,15,0.15); background-size: cover; background-position: center; }
   .poster-rank { position: absolute; top: 7px; left: 7px; background: rgba(255,255,255,0.9); color: var(--text); font-size: 11px; font-weight: 700; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
   .poster-score { position: absolute; top: 7px; right: 7px; color: #fff; font-size: 10px; font-weight: 700; border-radius: 6px; padding: 2px 5px; }
+  .poster-remove { position: absolute; top: 7px; right: 7px; width: 20px; height: 20px; border-radius: 50%; background: rgba(0,0,0,0.45); border: none; display: flex; align-items: center; justify-content: center; }
+  .shelf-add-btn { background: var(--primary-dim); color: var(--primary); border: none; border-radius: 999px; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .shelf-heading-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .converting-hint { font-size: 12px; color: var(--primary); font-weight: 600; margin: -10px 0 16px; }
   .poster-title-wrap { position: absolute; bottom: 0; left: 0; right: 0; padding: 22px 9px 10px; background: linear-gradient(to top, rgba(0,0,0,0.72), rgba(0,0,0,0)); }
   .poster-title { margin: 0; color: #fff; font-size: 12.5px; font-weight: 700; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 
@@ -323,6 +327,7 @@ function uid() {
 
 let state = {
   shows: [],
+  watchlist: [],
   profile: { name: "", photo: null },
   loaded: false,
   page: "rankings",
@@ -335,6 +340,7 @@ let state = {
   compareState: null,
   undo: null,
   form: { name: "", tier: null, note: "", genre: "", poster: null, pickedName: "" },
+  convertingWatchId: null,
   searchResults: [],
   searching: false,
   error: "",
@@ -348,6 +354,10 @@ function loadState() {
     if (s) state.shows = JSON.parse(s);
   } catch (e) {}
   try {
+    const w = localStorage.getItem("tevo_watchlist");
+    if (w) state.watchlist = JSON.parse(w);
+  } catch (e) {}
+  try {
     const p = localStorage.getItem("tevo_profile");
     if (p) state.profile = JSON.parse(p);
   } catch (e) {}
@@ -357,6 +367,11 @@ function loadState() {
 function persistShows(next) {
   state.shows = next;
   try { localStorage.setItem("tevo_shows", JSON.stringify(next)); } catch (e) {}
+}
+
+function persistWatchlist(next) {
+  state.watchlist = next;
+  try { localStorage.setItem("tevo_watchlist", JSON.stringify(next)); } catch (e) {}
 }
 
 function persistProfile(next) {
@@ -370,15 +385,48 @@ function resetForm() {
   state.form = { name: "", tier: null, note: "", genre: "", poster: null, pickedName: "" };
   state.searchResults = [];
   state.error = "";
+  state.convertingWatchId = null;
 }
 
 function goAdd() { resetForm(); state.view = "add"; render(); }
+function goWatchAdd() { resetForm(); state.view = "watchAdd"; render(); }
 function goList() { resetForm(); state.compareState = null; state.selectedShowId = null; state.view = "list"; render(); }
 function openDetail(id) { state.selectedShowId = id; state.view = "detail"; render(); }
 
 function updateShowMeta(id, updates) {
   const next = state.shows.map((s) => (s.id === id ? Object.assign({}, s, updates) : s));
   persistShows(next);
+}
+
+function submitWatchlistForm() {
+  const f = state.form;
+  if (!f.name.trim()) { state.error = "Give the show a name."; render(); return; }
+  const item = { id: uid(), name: f.name.trim(), poster: f.poster || null, addedAt: Date.now() };
+  persistWatchlist([...state.watchlist, item]);
+  goList();
+}
+
+function removeFromWatchlist(id) {
+  persistWatchlist(state.watchlist.filter((w) => w.id !== id));
+  render();
+}
+
+function startRankFromWatchlist(item) {
+  resetForm();
+  state.form.name = item.name;
+  state.form.pickedName = item.name;
+  state.form.poster = item.poster || null;
+  state.convertingWatchId = item.id;
+  state.view = "add";
+  render();
+}
+
+function maybeRemoveFromWatchlist() {
+  if (state.convertingWatchId) {
+    state.watchlist = state.watchlist.filter((w) => w.id !== state.convertingWatchId);
+    persistWatchlist(state.watchlist);
+    state.convertingWatchId = null;
+  }
 }
 
 function submitForm() {
@@ -396,6 +444,7 @@ function submitForm() {
 
   if (group.length === 0) {
     persistShows([...state.shows, applyScore(newShow, 0, 1, f.tier)]);
+    maybeRemoveFromWatchlist();
     goList();
     return;
   }
@@ -420,6 +469,7 @@ function finalizeInsertion(insertIndex) {
     return applyScore(src, idx, orderedIds.length, tier);
   });
   persistShows([...others, ...updatedGroup]);
+  maybeRemoveFromWatchlist();
   goList();
 }
 
@@ -560,6 +610,18 @@ function posterCardHtml(show, rank) {
     '</div>';
 }
 
+function watchPosterCardHtml(item, rank) {
+  const color = avatarColor(item.name);
+  const bg = item.poster
+    ? 'background-image:url(\'' + item.poster.replace(/'/g, "%27") + '\')'
+    : 'background-image:linear-gradient(155deg, ' + color + ', ' + color + 'CC 55%, #33302B)';
+  return '<div class="poster-card" style="' + bg + '" data-action="watch-to-rank" data-id="' + item.id + '">' +
+    '<div class="poster-rank">' + rank + '</div>' +
+    '<button class="poster-remove" data-action="remove-watch" data-id="' + item.id + '">' + iconSvg("x", 12, "#fff") + '</button>' +
+    '<div class="poster-title-wrap"><p class="poster-title display-title">' + escapeHtml(item.name) + '</p></div>' +
+    '</div>';
+}
+
 function render() {
   const app = document.getElementById("app");
   const showNav = state.view === "list";
@@ -569,6 +631,7 @@ function render() {
   if (state.view === "list" && state.page === "rankings") body = renderListView();
   else if (state.view === "list" && state.page === "profile") body = renderProfileView();
   else if (state.view === "add") body = renderAddView();
+  else if (state.view === "watchAdd") body = renderWatchAddView();
   else if (state.view === "compare" && state.compareState) body = renderCompareView();
   else if (state.view === "detail" && getSelectedShow()) body = renderDetailView();
 
@@ -728,6 +791,7 @@ function renderAddView() {
 
   return '<div style="padding-top:18px">' +
     '<button class="back-btn" data-action="go-list">' + iconSvg("back", 15, "#8D8D97") + ' Back</button>' +
+    (state.convertingWatchId ? '<p class="converting-hint">From your watchlist — how did you feel about it?</p>' : "") +
     '<label class="field-label">SHOW NAME</label>' +
     '<div class="title-search-wrap">' +
       '<span class="title-search-icon">' + iconSvg("search", 16, "#8D8D97") + '</span>' +
@@ -746,6 +810,22 @@ function renderAddView() {
     '</div>' +
     (state.error ? '<p class="error-text">' + escapeHtml(state.error) + '</p>' : "") +
     '<button class="primary-btn" data-action="submit-form">Continue</button>' +
+  '</div>';
+}
+
+function renderWatchAddView() {
+  const f = state.form;
+  return '<div style="padding-top:18px">' +
+    '<button class="back-btn" data-action="go-list">' + iconSvg("back", 15, "#8D8D97") + ' Back</button>' +
+    '<label class="field-label">SHOW NAME</label>' +
+    '<div class="title-search-wrap">' +
+      '<span class="title-search-icon">' + iconSvg("search", 16, "#8D8D97") + '</span>' +
+      '<input type="text" id="titleSearchInput" placeholder="e.g. The Bear" value="' + escapeHtml(f.name) + '">' +
+      (f.pickedName ? '<span class="title-search-check">' + iconSvg("check", 16, "#9CAF88") + '</span>' : "") +
+      '<div id="searchDropdownWrap"></div>' +
+    '</div>' +
+    (state.error ? '<p class="error-text">' + escapeHtml(state.error) + '</p>' : "") +
+    '<button class="primary-btn" data-action="submit-watch-form">Add to Watchlist</button>' +
   '</div>';
 }
 
@@ -827,6 +907,7 @@ function renderProfileView() {
   const p = state.profile;
   const topShows = [...state.shows].sort((a, b) => b.score - a.score).slice(0, 5);
   const recentShows = [...state.shows].sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)).slice(0, 8);
+  const watchlistSorted = [...state.watchlist].sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
 
   const genreCounts = {};
   state.shows.forEach((s) => { if (s.genre) genreCounts[s.genre] = (genreCounts[s.genre] || 0) + 1; });
@@ -865,6 +946,15 @@ function renderProfileView() {
       (recentShows.length === 0
         ? '<p class="shelf-empty">Shows you add will show up here, most recent first.</p>'
         : '<div class="shelf-row">' + recentShows.map((s, i) => posterCardHtml(s, i + 1)).join("") + '</div>') +
+    '</div>' +
+    '<div class="shelf-section">' +
+      '<div class="shelf-heading-row">' +
+        '<p class="shelf-heading display-title" style="margin:0">Want to Watch</p>' +
+        '<button class="shelf-add-btn" data-action="go-watch-add">' + iconSvg("plus", 15, "#9CAF88") + '</button>' +
+      '</div>' +
+      (watchlistSorted.length === 0
+        ? '<p class="shelf-empty">Tap + to queue up shows you want to watch. Tap a card once you\'ve seen it to rank it, or the × to remove it.</p>'
+        : '<div class="shelf-row">' + watchlistSorted.map((w, i) => watchPosterCardHtml(w, i + 1)).join("") + '</div>') +
     '</div>' +
   '</div>';
 }
@@ -922,6 +1012,7 @@ function attachHandlers() {
 
     if (action === "set-page") { state.page = el.dataset.page; render(); }
     else if (action === "go-add") { goAdd(); }
+    else if (action === "go-watch-add") { goWatchAdd(); }
     else if (action === "go-list") { goList(); }
     else if (action === "open-detail") { state.detailNoteDraft = null; state.detailGenreDraft = undefined; state.detailSaved = false; openDetail(el.dataset.id); }
     else if (action === "delete-show") { e.stopPropagation(); deleteShow(el.dataset.id); }
@@ -971,6 +1062,12 @@ function attachHandlers() {
       goList();
     }
     else if (action === "pick-photo") { document.getElementById("fileInput").click(); }
+    else if (action === "submit-watch-form") { submitWatchlistForm(); }
+    else if (action === "watch-to-rank") {
+      const item = state.watchlist.find((w) => w.id === el.dataset.id);
+      if (item) startRankFromWatchlist(item);
+    }
+    else if (action === "remove-watch") { e.stopPropagation(); removeFromWatchlist(el.dataset.id); }
     else if (action === "edit-name") { state.editingName = true; render(); setTimeout(() => { const i = document.getElementById("profileNameInput"); if (i) { i.focus(); i.select(); } }, 0); }
   };
 
